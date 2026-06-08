@@ -1,5 +1,5 @@
 {
-  "name": "reassign",
+  "name": "@palpatineli/ohif-reassign",
   "version": "0.0.1",
   "description": "",
   "author": "Keji Li",
@@ -10,7 +10,10 @@
     "public/**",
     "README.md"
   ],
-  "repository": "OHIF/Viewers",
+  "repository": {
+      "type": "git",
+      "url": "git+https://github.com/keji-p-li/ohif-reassign.git"
+  },
   "keywords": [
     "ohif-extension"
   ],

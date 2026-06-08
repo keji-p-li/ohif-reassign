@@ -1,86 +1,186 @@
+import { addTool } from '@cornerstonejs/tools';
+import { Icons } from '@ohif/ui-next';
 import { id } from './id';
+import ReassignTool from './ReassignTool';
+import { ToolLabelmapEditWithAssign } from './icon';
 
-/**
- * You can remove any of the following modules if you don't need them.
- */
 export default {
-  /**
-   * Only required property. Should be a unique value across all extensions.
-   * You ID can be anything you want, but it should be unique.
-   */
   id,
 
-  /**
-   * Perform any pre-registration tasks here. This is called before the extension
-   * is registered. Usually we run tasks such as: configuring the libraries
-   * (e.g. cornerstone, cornerstoneTools, ...) or registering any services that
-   * this extension is providing.
-   */
-  preRegistration: ({ servicesManager, commandsManager, configuration = {} }) => {},
-  /**
-   * PanelModule should provide a list of panels that will be available in OHIF
-   * for Modes to consume and render. Each panel is defined by a {name,
-   * iconName, iconLabel, label, component} object. Example of a panel module
-   * is the StudyBrowserPanel that is provided by the default extension in OHIF.
-   */
-  getPanelModule: ({ servicesManager, commandsManager, extensionManager }) => {},
-  /**
-   * ViewportModule should provide a list of viewports that will be available in OHIF
-   * for Modes to consume and use in the viewports. Each viewport is defined by
-   * {name, component} object. Example of a viewport module is the CornerstoneViewport
-   * that is provided by the Cornerstone extension in OHIF.
-   */
-  getViewportModule: ({ servicesManager, commandsManager, extensionManager }) => {},
-  /**
-   * ToolbarModule should provide a list of tool buttons that will be available in OHIF
-   * for Modes to consume and use in the toolbar. Each tool button is defined by
-   * {name, defaultComponent, clickHandler }. Examples include radioGroupIcons and
-   * splitButton toolButton that the default extension is providing.
-   */
-  getToolbarModule: ({ servicesManager, commandsManager, extensionManager }) => {},
-  /**
-   * LayoutTemplateMOdule should provide a list of layout templates that will be
-   * available in OHIF for Modes to consume and use to layout the viewer.
-   * Each layout template is defined by a { name, id, component}. Examples include
-   * the default layout template provided by the default extension which renders
-   * a Header, left and right sidebars, and a viewport section in the middle
-   * of the viewer.
-   */
-  getLayoutTemplateModule: ({ servicesManager, commandsManager, extensionManager }) => {},
-  /**
-   * SopClassHandlerModule should provide a list of sop class handlers that will be
-   * available in OHIF for Modes to consume and use to create displaySets from Series.
-   * Each sop class handler is defined by a { name, sopClassUids, getDisplaySetsFromSeries}.
-   * Examples include the default sop class handler provided by the default extension
-   */
-  getSopClassHandlerModule: ({ servicesManager, commandsManager, extensionManager }) => {},
-  /**
-   * HangingProtocolModule should provide a list of hanging protocols that will be
-   * available in OHIF for Modes to use to decide on the structure of the viewports
-   * and also the series that hung in the viewports. Each hanging protocol is defined by
-   * { name, protocols}. Examples include the default hanging protocol provided by
-   * the default extension that shows 2x2 viewports.
-   */
-  getHangingProtocolModule: ({ servicesManager, commandsManager, extensionManager }) => {},
-  /**
-   * CommandsModule should provide a list of commands that will be available in OHIF
-   * for Modes to consume and use in the viewports. Each command is defined by
-   * an object of { actions, definitions, defaultContext } where actions is an
-   * object of functions, definitions is an object of available commands, their
-   * options, and defaultContext is the default context for the command to run against.
-   */
-  getCommandsModule: ({ servicesManager, commandsManager, extensionManager }) => {},
-  /**
-   * ContextModule should provide a list of context that will be available in OHIF
-   * and will be provided to the Modes. A context is a state that is shared OHIF.
-   * Context is defined by an object of { name, context, provider }. Examples include
-   * the measurementTracking context provided by the measurementTracking extension.
-   */
-  getContextModule: ({ servicesManager, commandsManager, extensionManager }) => {},
-  /**
-   * DataSourceModule should provide a list of data sources to be used in OHIF.
-   * DataSources can be used to map the external data formats to the OHIF's
-   * native format. DataSources are defined by an object of { name, type, createDataSource }.
-   */
-  getDataSourcesModule: ({ servicesManager, commandsManager, extensionManager }) => {},
+  preRegistration: ({ servicesManager, commandsManager }) => {
+    // 1. Register the custom SVG icon
+    Icons.addIcon('ToolLabelmapEditWithAssign', ToolLabelmapEditWithAssign);
+
+    // 2. Register ReassignTool globally with Cornerstone3D
+    addTool(ReassignTool);
+
+    // 3. Register our button dynamically inside the toolbarService and add it to the LabelMapTools toolbox
+    const { toolbarService, toolGroupService } = servicesManager.services;
+
+    const reassignButton = {
+      id: 'ReassignTool',
+      uiType: 'ohif.toolBoxButton',
+      props: {
+        icon: 'ToolLabelmapEditWithAssign',
+        label: 'Reassign Segment',
+        tooltip: 'Reassign segment voxels using positive (green) and negative (red) traces. Normal click & drag to include, hold Ctrl to exclude.',
+        evaluate: [
+          {
+            name: 'evaluate.cornerstone.segmentation',
+            toolNames: ['ReassignTool'],
+          },
+          {
+            name: 'evaluate.cornerstone.hasSegmentationOfType',
+            segmentationRepresentationType: 'Labelmap',
+          },
+        ],
+        commands: [
+          {
+            commandName: 'setToolActive',
+            commandOptions: {
+              toolName: 'ReassignTool',
+            },
+          },
+          {
+            commandName: 'activateSelectedSegmentationOfType',
+            commandOptions: {
+              segmentationRepresentationType: 'Labelmap',
+            },
+          },
+        ],
+        options: [
+          {
+            name: 'Mode',
+            type: 'radio',
+            id: 'reassign-mode',
+            value: 'include',
+            values: [
+              { value: 'include', label: 'Include' },
+              { value: 'exclude', label: 'Exclude' },
+            ],
+            commands: ({ commandsManager, options }) => {
+              const selectedValue = options.find(opt => opt.id === 'reassign-mode').value;
+              commandsManager.run('setReassignToolMode', { mode: selectedValue });
+            },
+          },
+          {
+            name: 'Reset Traces',
+            type: 'button',
+            id: 'reassign-reset',
+            commands: 'resetReassignTraces',
+          },
+          {
+            name: 'Undo Segment Change',
+            type: 'button',
+            id: 'reassign-undo',
+            commands: 'undoReassignChange',
+          },
+        ],
+      },
+    };
+
+    // Re-register button and add to LabelMapTools whenever toolbar resets (onModeEnter wipes all state)
+    let isUpdatingToolbar = false;
+    toolbarService.subscribe(toolbarService.EVENTS.TOOL_BAR_MODIFIED, () => {
+      if (isUpdatingToolbar) return;
+      isUpdatingToolbar = true;
+      try {
+        if (!toolbarService.getButton('ReassignTool')) {
+          toolbarService.register([reassignButton]);
+        }
+        const labelMapTools = toolbarService.getButtonSection('LabelMapTools') || [];
+        const hasButton = labelMapTools.some(btn => btn?.id === 'ReassignTool');
+        if (!hasButton) {
+          toolbarService.updateSection('LabelMapTools', ['ReassignTool']);
+        }
+      } finally {
+        isUpdatingToolbar = false;
+      }
+    });
+
+    // Initial registration
+    toolbarService.register([reassignButton]);
+
+    // Helper to add tool to groups
+    const addToolToGroup = (toolGroupId: string) => {
+      try {
+        toolGroupService.addToolsToToolGroup(toolGroupId, [
+          {
+            toolName: 'ReassignTool',
+          },
+        ]);
+      } catch (err) {
+        console.warn(`Could not add ReassignTool to group ${toolGroupId}:`, err);
+      }
+    };
+
+    // Add to all current groups
+    const existingGroupIds = toolGroupService.getToolGroupIds() || [];
+    existingGroupIds.forEach(id => addToolToGroup(id));
+
+    // Add to any newly created groups
+    toolGroupService.subscribe(toolGroupService.EVENTS.TOOLGROUP_CREATED, ({ toolGroupId }) => {
+      addToolToGroup(toolGroupId);
+    });
+  },
+
+  getCommandsModule: ({ servicesManager }) => {
+    const { toolGroupService, viewportGridService } = servicesManager.services;
+
+    const getActiveToolInstance = () => {
+      const viewportId = viewportGridService.getActiveViewportId();
+      const toolGroup = toolGroupService.getToolGroupForViewport(viewportId);
+      const toolInstance = toolGroup?.getToolInstance('ReassignTool') as ReassignTool;
+      if (toolInstance) {
+        toolInstance.servicesManager = servicesManager;
+      }
+      return toolInstance;
+    };
+
+    const actions = {
+      setReassignToolMode: ({ mode }) => {
+        const toolInstance = getActiveToolInstance();
+        if (toolInstance) {
+          toolInstance.setDrawMode(mode);
+        }
+      },
+      resetReassignTraces: () => {
+        const toolInstance = getActiveToolInstance();
+        if (toolInstance) {
+          toolInstance.clearTraces();
+          // Redraw active viewport
+          const { cornerstoneViewportService } = servicesManager.services;
+          const viewportId = viewportGridService.getActiveViewportId();
+          const viewport = cornerstoneViewportService.getCornerstoneViewport(viewportId);
+          if (viewport) {
+            viewport.render();
+          }
+        }
+      },
+      undoReassignChange: () => {
+        const toolInstance = getActiveToolInstance();
+        if (toolInstance) {
+          toolInstance.undoChange(servicesManager);
+        }
+      },
+    };
+
+    const definitions = {
+      setReassignToolMode: {
+        commandFn: actions.setReassignToolMode,
+      },
+      resetReassignTraces: {
+        commandFn: actions.resetReassignTraces,
+      },
+      undoReassignChange: {
+        commandFn: actions.undoReassignChange,
+      },
+    };
+
+    return {
+      actions,
+      definitions,
+      defaultContext: 'VIEWER',
+    };
+  },
 };
