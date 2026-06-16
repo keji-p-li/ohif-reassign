@@ -13,6 +13,7 @@ export default {
 
     // 2. Register ReassignTool globally with Cornerstone3D
     addTool(ReassignTool);
+    ReassignTool.sharedServicesManager = servicesManager;
 
     // 3. Register our button dynamically inside the toolbarService and add it to the LabelMapTools toolbox
     const { toolbarService, toolGroupService } = servicesManager.services;
@@ -23,7 +24,7 @@ export default {
       props: {
         icon: 'ToolLabelmapEditWithAssign',
         label: 'Reassign Segment',
-        tooltip: 'Reassign segment voxels using positive (green) and negative (red) traces. Normal click & drag to include, hold Ctrl to exclude.',
+        tooltip: 'Reassign segment voxels using positive (green) and negative (red) traces. Use the mode option or G to switch include/exclude.',
         evaluate: [
           {
             name: 'evaluate.cornerstone.segmentation',
@@ -36,7 +37,7 @@ export default {
         ],
         commands: [
           {
-            commandName: 'setToolActive',
+            commandName: 'setToolActiveToolbar',
             commandOptions: {
               toolName: 'ReassignTool',
             },
@@ -104,11 +105,9 @@ export default {
     // Helper to add tool to groups
     const addToolToGroup = (toolGroupId: string) => {
       try {
-        toolGroupService.addToolsToToolGroup(toolGroupId, [
-          {
-            toolName: 'ReassignTool',
-          },
-        ]);
+        toolGroupService.addToolsToToolGroup(toolGroupId, {
+          passive: [{ toolName: 'ReassignTool' }],
+        });
       } catch (err) {
         console.warn(`Could not add ReassignTool to group ${toolGroupId}:`, err);
       }
@@ -141,7 +140,17 @@ export default {
       setReassignToolMode: ({ mode }) => {
         const toolInstance = getActiveToolInstance();
         if (toolInstance) {
-          toolInstance.setDrawMode(mode);
+          toolInstance.updateToolbarOption(mode);
+        }
+      },
+      toggleReassignToolMode: ({ evt }) => {
+        if (evt?.repeat) {
+          return;
+        }
+        const toolInstance = getActiveToolInstance();
+        if (toolInstance) {
+          const nextMode = toolInstance.drawMode === 'include' ? 'exclude' : 'include';
+          toolInstance.updateToolbarOption(nextMode);
         }
       },
       resetReassignTraces: () => {
@@ -169,6 +178,9 @@ export default {
       setReassignToolMode: {
         commandFn: actions.setReassignToolMode,
       },
+      toggleReassignToolMode: {
+        commandFn: actions.toggleReassignToolMode,
+      },
       resetReassignTraces: {
         commandFn: actions.resetReassignTraces,
       },
@@ -183,4 +195,22 @@ export default {
       defaultContext: 'VIEWER',
     };
   },
+
+  getCustomizationModule: () => [
+    {
+      name: 'default',
+      value: {
+        'ohif.hotkeyBindings': {
+          $push: [
+            {
+              commandName: 'toggleReassignToolMode',
+              label: 'Toggle Reassign Include/Exclude',
+              keys: ['g'],
+              isEditable: true,
+            },
+          ],
+        },
+      },
+    },
+  ],
 };

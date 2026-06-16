@@ -1,11 +1,19 @@
-import { BaseTool, drawing, utilities as cstUtils } from '@cornerstonejs/tools';
-import { cache, utilities as csUtils } from '@cornerstonejs/core';
-import { triggerSegmentationEvents } from '@cornerstonejs/tools';
+import {
+  BaseTool,
+  drawing,
+  Enums as csToolsEnums,
+  segmentation as cstSegmentation,
+} from '@cornerstonejs/tools';
+import { cache, utilities as csUtils, getEnabledElement } from '@cornerstonejs/core';
+
+const { triggerSegmentationEvents } = cstSegmentation;
+const { Labelmap: LABELMAP } = csToolsEnums.SegmentationRepresentations;
 
 const { transformWorldToIndex } = csUtils;
 
 class ReassignTool extends BaseTool {
   static toolName = 'ReassignTool';
+  static sharedServicesManager: any = null;
 
   isDrawing = false;
   activeTrace: [number, number, number][] = [];
@@ -18,7 +26,7 @@ class ReassignTool extends BaseTool {
     segmentationId: string;
     sliceAxis: number;
     sliceIndex: number;
-    originalValues: Int16Array | Uint8Array;
+    originalValues: Int16Array;
   }[] = [];
 
   // Current draw mode: 'include' (positive) or 'exclude' (negative)
@@ -49,6 +57,7 @@ class ReassignTool extends BaseTool {
   }
 
   undoChange(servicesManager: any) {
+    const sm = servicesManager ?? this.servicesManager ?? ReassignTool.sharedServicesManager;
     if (this.segmentUndoStack.length === 0) {
       console.log('Undo stack is empty');
       return;
@@ -56,7 +65,7 @@ class ReassignTool extends BaseTool {
     const lastChange = this.segmentUndoStack.pop();
     const { segmentationId, sliceAxis, sliceIndex, originalValues } = lastChange;
 
-    const segmentation = cstUtils.segmentation.state.getSegmentation(segmentationId);
+    const segmentation = cstSegmentation.state.getSegmentation(segmentationId);
     if (!segmentation) return;
 
     const labelmapData = segmentation.representationData.Labelmap;
@@ -99,13 +108,16 @@ class ReassignTool extends BaseTool {
       }
     }
 
-    const { viewportGridService } = servicesManager.services;
+    const { viewportGridService } = sm.services;
     const viewportId = viewportGridService.getActiveViewportId();
-    triggerSegmentationEvents.triggerSegmentationRepresentationModified(viewportId, segmentationId);
+    triggerSegmentationEvents.triggerSegmentationRepresentationModified(
+      viewportId,
+      segmentationId,
+      LABELMAP
+    );
   }
 
   onSetToolActive = () => {
-    this.clearTraces();
     this.addKeyListener();
   };
 
@@ -121,56 +133,64 @@ class ReassignTool extends BaseTool {
 
   addKeyListener() {
     if (this.keyListenerAdded) return;
-    window.addEventListener('keydown', this.keydownHandler);
-    window.addEventListener('keyup', this.keyupHandler);
+    window.addEventListener('keydown', this.keydownHandler, true);
     this.keyListenerAdded = true;
   }
 
   removeKeyListener() {
     if (!this.keyListenerAdded) return;
-    window.removeEventListener('keydown', this.keydownHandler);
-    window.removeEventListener('keyup', this.keyupHandler);
+    window.removeEventListener('keydown', this.keydownHandler, true);
     this.keyListenerAdded = false;
   }
 
   keydownHandler = (evt: KeyboardEvent) => {
     if (evt.key === 'Escape') {
       this.clearTraces();
-      if (this.servicesManager) {
-        const { viewportGridService, cornerstoneViewportService } = this.servicesManager.services;
+      const sm = this.servicesManager ?? ReassignTool.sharedServicesManager;
+      if (sm) {
+        const { viewportGridService, cornerstoneViewportService } = sm.services;
         const viewportId = viewportGridService.getActiveViewportId();
         const viewport = cornerstoneViewportService.getCornerstoneViewport(viewportId);
         if (viewport) {
           viewport.render();
         }
       }
-    } else if (evt.key === 'Control') {
-      this.updateToolbarOption('exclude');
-    }
-  };
-
-  keyupHandler = (evt: KeyboardEvent) => {
-    if (evt.key === 'Control') {
-      this.updateToolbarOption('include');
     }
   };
 
   updateToolbarOption(mode: 'include' | 'exclude') {
     this.setDrawMode(mode);
-    if (this.servicesManager) {
-      const { toolbarService } = this.servicesManager.services;
+    const sm = this.servicesManager ?? ReassignTool.sharedServicesManager;
+    if (sm) {
+      const { toolbarService, viewportGridService } = sm.services;
       const button = toolbarService.getButton('ReassignTool');
       if (button) {
-        const option = toolbarService.getOptionById(button, 'reassign-mode');
-        if (option) {
-          option.value = mode;
-          toolbarService.refreshToolbarState();
+        const options = button.props.options?.map(option =>
+          option.id === 'reassign-mode' ? { ...option, value: mode } : option
+        );
+        if (options) {
+          toolbarService.setButtons({
+            ...toolbarService.getButtons(),
+            ReassignTool: {
+              ...button,
+              props: {
+                ...button.props,
+                options,
+              },
+            },
+          });
+          toolbarService.refreshToolbarState({
+            viewportId: viewportGridService.getActiveViewportId(),
+          });
         }
       }
     }
   }
 
   preMouseDownCallback = (evt: any): boolean => {
+    if (!this.keyListenerAdded) {
+      this.addKeyListener();
+    }
     const eventDetail = evt.detail;
     const { currentPoints } = eventDetail;
 
@@ -183,16 +203,18 @@ class ReassignTool extends BaseTool {
 
   mouseDragCallback = (evt: any): void => {
     if (!this.isDrawing) return;
-    const eventDetail = evt.detail;
-    const { currentPoints, enabledElement } = eventDetail;
+    const { currentPoints, element } = evt.detail;
+    const enabledElement = getEnabledElement(element);
+    if (!enabledElement) return;
     this.activeTrace.push(currentPoints.world);
     enabledElement.viewport.render();
   };
 
   mouseUpCallback = (evt: any): void => {
     if (!this.isDrawing) return;
-    const eventDetail = evt.detail;
-    const { currentPoints, enabledElement } = eventDetail;
+    const { currentPoints, element } = evt.detail;
+    const enabledElement = getEnabledElement(element);
+    if (!enabledElement) return;
     this.activeTrace.push(currentPoints.world);
 
     if (this.activeTraceType === 'positive') {
@@ -257,8 +279,9 @@ class ReassignTool extends BaseTool {
       return;
     }
 
-    if (!this.servicesManager) return;
-    const { segmentationService } = this.servicesManager.services;
+    const sm = this.servicesManager ?? ReassignTool.sharedServicesManager;
+    if (!sm) return;
+    const { segmentationService } = sm.services;
     const { viewport } = enabledElement;
     const viewportId = viewport.id;
 
@@ -281,12 +304,13 @@ class ReassignTool extends BaseTool {
 
     const imageData = labelmapVolume.imageData;
 
-    // Convert world points to 3D voxel indices [i, j, k]
+    // Convert world points to rounded 3D voxel indices [i, j, k].
+    // Cornerstone can return fractional index coordinates for world points.
     const posVoxelPoints = this.positiveTraces.flatMap(trace =>
-      trace.map(p => transformWorldToIndex(imageData, p))
+      trace.map(p => this.worldToRoundedIjk(imageData, p))
     );
     const negVoxelPoints = this.negativeTraces.flatMap(trace =>
-      trace.map(p => transformWorldToIndex(imageData, p))
+      trace.map(p => this.worldToRoundedIjk(imageData, p))
     );
 
     // Combine voxel points to find slice orientation
@@ -312,7 +336,7 @@ class ReassignTool extends BaseTool {
     // Interpolate points using Bresenham to make continuous lines of seeds on the grid
     const posSeedsGrid: [number, number][] = [];
     this.positiveTraces.forEach(trace => {
-      const uvs = trace.map(p => this.ijkToUv(transformWorldToIndex(imageData, p), sliceAxis));
+      const uvs = trace.map(p => this.ijkToUv(this.worldToRoundedIjk(imageData, p), sliceAxis));
       for (let i = 0; i < uvs.length - 1; i++) {
         posSeedsGrid.push(...this.getLinePoints(uvs[i][0], uvs[i][1], uvs[i + 1][0], uvs[i + 1][1]));
       }
@@ -320,11 +344,15 @@ class ReassignTool extends BaseTool {
 
     const negSeedsGrid: [number, number][] = [];
     this.negativeTraces.forEach(trace => {
-      const uvs = trace.map(p => this.ijkToUv(transformWorldToIndex(imageData, p), sliceAxis));
+      const uvs = trace.map(p => this.ijkToUv(this.worldToRoundedIjk(imageData, p), sliceAxis));
       for (let i = 0; i < uvs.length - 1; i++) {
         negSeedsGrid.push(...this.getLinePoints(uvs[i][0], uvs[i][1], uvs[i + 1][0], uvs[i + 1][1]));
       }
     });
+
+    if (!posSeedsGrid.length || !negSeedsGrid.length) {
+      return;
+    }
 
     // Backup current slice voxel values for Undo support
     const backupArray = new Int16Array(W * H);
@@ -417,7 +445,16 @@ class ReassignTool extends BaseTool {
       }
     }
 
-    triggerSegmentationEvents.triggerSegmentationRepresentationModified(viewportId, segmentationId);
+    triggerSegmentationEvents.triggerSegmentationRepresentationModified(
+      viewportId,
+      segmentationId,
+      LABELMAP
+    );
+  }
+
+  worldToRoundedIjk(imageData: any, worldPoint: [number, number, number]): [number, number, number] {
+    const ijk = transformWorldToIndex(imageData, worldPoint);
+    return [Math.round(ijk[0]), Math.round(ijk[1]), Math.round(ijk[2])];
   }
 
   getSliceInfo(points: number[][]) {
@@ -476,6 +513,10 @@ class ReassignTool extends BaseTool {
 
   getLinePoints(x0: number, y0: number, x1: number, y1: number): [number, number][] {
     const points: [number, number][] = [];
+    x0 = Math.round(x0);
+    y0 = Math.round(y0);
+    x1 = Math.round(x1);
+    y1 = Math.round(y1);
     const dx = Math.abs(x1 - x0);
     const dy = Math.abs(y1 - y0);
     const sx = x0 < x1 ? 1 : -1;
