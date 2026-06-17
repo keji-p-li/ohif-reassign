@@ -4,12 +4,18 @@ import {
   Enums as csToolsEnums,
   segmentation as cstSegmentation,
 } from '@cornerstonejs/tools';
-import { cache, utilities as csUtils, getEnabledElement } from '@cornerstonejs/core';
+import { cache, eventTarget, utilities as csUtils, getEnabledElement } from '@cornerstonejs/core';
 
 const { triggerSegmentationEvents } = cstSegmentation;
 const { Labelmap: LABELMAP } = csToolsEnums.SegmentationRepresentations;
 
 const { transformWorldToIndex } = csUtils;
+
+type TraceSet = {
+  sliceKey: string;
+  positive: [number, number, number][][];
+  negative: [number, number, number][][];
+};
 
 class ReassignTool extends BaseTool {
   static toolName = 'ReassignTool';
@@ -18,8 +24,8 @@ class ReassignTool extends BaseTool {
   isDrawing = false;
   activeTrace: [number, number, number][] = [];
   activeTraceType: 'positive' | 'negative' | null = null;
-  positiveTraces: [number, number, number][][] = [];
-  negativeTraces: [number, number, number][][] = [];
+  activeTraceSliceKey: string | null = null;
+  traceSet: TraceSet | null = null;
 
   // Undo stack for segmentations
   segmentUndoStack: {
@@ -49,9 +55,9 @@ class ReassignTool extends BaseTool {
   }
 
   clearTraces() {
-    this.positiveTraces = [];
-    this.negativeTraces = [];
+    this.traceSet = null;
     this.activeTrace = [];
+    this.activeTraceSliceKey = null;
     this.isDrawing = false;
     this.activeTraceType = null;
   }
@@ -74,7 +80,8 @@ class ReassignTool extends BaseTool {
     const labelmapVolume = cache.getVolume(labelmapData.volumeId);
     if (!labelmapVolume) return;
 
-    const scalarData = labelmapVolume.getScalarData();
+    const scalarData = this.getScalarData(labelmapVolume);
+    if (!scalarData) return;
     const dimensions = labelmapVolume.dimensions;
     const [X, Y, Z] = dimensions;
 
@@ -108,13 +115,11 @@ class ReassignTool extends BaseTool {
       }
     }
 
-    const { viewportGridService } = sm.services;
+    this.commitScalarData(labelmapVolume, scalarData);
+    const { viewportGridService, cornerstoneViewportService } = sm.services;
     const viewportId = viewportGridService.getActiveViewportId();
-    triggerSegmentationEvents.triggerSegmentationRepresentationModified(
-      viewportId,
-      segmentationId,
-      LABELMAP
-    );
+    const viewport = cornerstoneViewportService.getCornerstoneViewport(viewportId);
+    this.notifySegmentationModified(sm, viewport, viewportId, segmentationId);
   }
 
   onSetToolActive = () => {
@@ -192,10 +197,26 @@ class ReassignTool extends BaseTool {
       this.addKeyListener();
     }
     const eventDetail = evt.detail;
-    const { currentPoints } = eventDetail;
+    const { currentPoints, element } = eventDetail;
+    const enabledElement = getEnabledElement(element);
+    const sliceKey = enabledElement
+      ? this.getViewportSliceKey(enabledElement.viewport, currentPoints.world)
+      : null;
+
+    if (sliceKey && this.traceSet?.sliceKey !== sliceKey) {
+      this.clearTraces();
+    }
+    if (sliceKey && !this.traceSet) {
+      this.traceSet = {
+        sliceKey,
+        positive: [],
+        negative: [],
+      };
+    }
 
     this.isDrawing = true;
     this.activeTraceType = this.drawMode === 'include' ? 'positive' : 'negative';
+    this.activeTraceSliceKey = sliceKey;
     this.activeTrace = [currentPoints.world];
 
     return true; // Consume event
@@ -218,13 +239,14 @@ class ReassignTool extends BaseTool {
     this.activeTrace.push(currentPoints.world);
 
     if (this.activeTraceType === 'positive') {
-      this.positiveTraces.push(this.activeTrace);
+      this.getOrCreateTraceSet(enabledElement.viewport).positive.push(this.activeTrace);
     } else {
-      this.negativeTraces.push(this.activeTrace);
+      this.getOrCreateTraceSet(enabledElement.viewport).negative.push(this.activeTrace);
     }
 
     this.isDrawing = false;
     this.activeTrace = [];
+    this.activeTraceSliceKey = null;
     this.activeTraceType = null;
 
     this.runPlaceholderAlgorithm(enabledElement);
@@ -234,9 +256,11 @@ class ReassignTool extends BaseTool {
   renderAnnotation = (enabledElement: any, svgDrawingHelper: any): void => {
     const { viewport } = enabledElement;
     const annotationUID = 'reassign-traces-annotation';
+    const sliceKey = this.getViewportSliceKey(viewport);
+    const visibleTraceSet = this.traceSet?.sliceKey === sliceKey ? this.traceSet : null;
 
     // Draw completed positive traces
-    this.positiveTraces.forEach((trace, idx) => {
+    visibleTraceSet?.positive.forEach((trace, idx) => {
       const canvasCoords = trace.map(p => viewport.worldToCanvas(p));
       drawing.drawPolyline(
         svgDrawingHelper,
@@ -248,7 +272,7 @@ class ReassignTool extends BaseTool {
     });
 
     // Draw completed negative traces
-    this.negativeTraces.forEach((trace, idx) => {
+    visibleTraceSet?.negative.forEach((trace, idx) => {
       const canvasCoords = trace.map(p => viewport.worldToCanvas(p));
       drawing.drawPolyline(
         svgDrawingHelper,
@@ -260,7 +284,7 @@ class ReassignTool extends BaseTool {
     });
 
     // Draw current active trace
-    if (this.isDrawing && this.activeTrace.length > 1) {
+    if (this.isDrawing && this.activeTrace.length > 1 && this.activeTraceSliceKey === sliceKey) {
       const canvasCoords = this.activeTrace.map(p => viewport.worldToCanvas(p));
       const color = this.activeTraceType === 'positive' ? 'rgb(0, 255, 0)' : 'rgb(255, 0, 0)';
       drawing.drawPolyline(
@@ -274,8 +298,7 @@ class ReassignTool extends BaseTool {
   };
 
   runPlaceholderAlgorithm(enabledElement: any) {
-    if (this.positiveTraces.length === 0 || this.negativeTraces.length === 0) {
-      console.log('Requires at least one positive and one negative trace to run segment editing');
+    if (!this.traceSet || (this.traceSet.positive.length === 0 && this.traceSet.negative.length === 0)) {
       return;
     }
 
@@ -284,6 +307,14 @@ class ReassignTool extends BaseTool {
     const { segmentationService } = sm.services;
     const { viewport } = enabledElement;
     const viewportId = viewport.id;
+    const currentSliceKey = this.getViewportSliceKey(viewport);
+    const activeTraceSet = this.traceSet?.sliceKey === currentSliceKey ? this.traceSet : null;
+    const positiveTraces = activeTraceSet?.positive ?? [];
+    const negativeTraces = activeTraceSet?.negative ?? [];
+
+    if (positiveTraces.length === 0 && negativeTraces.length === 0) {
+      return;
+    }
 
     const activeSeg = segmentationService.getActiveSegmentation(viewportId);
     const activeSegIndexInfo = segmentationService.getActiveSegment(viewportId);
@@ -292,30 +323,24 @@ class ReassignTool extends BaseTool {
     const { segmentationId } = activeSeg;
     const { segmentIndex } = activeSegIndexInfo;
 
-    const labelmapData = activeSeg.representationData.Labelmap;
-    if (!labelmapData || !labelmapData.volumeId) return;
+    const editData = this.getLabelmapEditData(segmentationService, activeSeg, segmentationId, viewport);
+    if (!editData) return;
 
-    const labelmapVolume = cache.getVolume(labelmapData.volumeId);
-    if (!labelmapVolume) return;
-
-    const scalarData = labelmapVolume.getScalarData();
-    const dimensions = labelmapVolume.dimensions;
+    const { target: labelmapTarget, scalarData, dimensions, imageData, forceSliceInfo } = editData;
     const [X, Y, Z] = dimensions;
-
-    const imageData = labelmapVolume.imageData;
 
     // Convert world points to rounded 3D voxel indices [i, j, k].
     // Cornerstone can return fractional index coordinates for world points.
-    const posVoxelPoints = this.positiveTraces.flatMap(trace =>
+    const posVoxelPoints = positiveTraces.flatMap(trace =>
       trace.map(p => this.worldToRoundedIjk(imageData, p))
     );
-    const negVoxelPoints = this.negativeTraces.flatMap(trace =>
+    const negVoxelPoints = negativeTraces.flatMap(trace =>
       trace.map(p => this.worldToRoundedIjk(imageData, p))
     );
 
     // Combine voxel points to find slice orientation
     const allPoints = [...posVoxelPoints, ...negVoxelPoints];
-    const sliceInfo = this.getSliceInfo(allPoints);
+    const sliceInfo = forceSliceInfo ?? this.getSliceInfo(allPoints);
     if (!sliceInfo) return;
 
     const { sliceAxis, sliceIndex } = sliceInfo;
@@ -335,7 +360,7 @@ class ReassignTool extends BaseTool {
 
     // Interpolate points using Bresenham to make continuous lines of seeds on the grid
     const posSeedsGrid: [number, number][] = [];
-    this.positiveTraces.forEach(trace => {
+    positiveTraces.forEach(trace => {
       const uvs = trace.map(p => this.ijkToUv(this.worldToRoundedIjk(imageData, p), sliceAxis));
       for (let i = 0; i < uvs.length - 1; i++) {
         posSeedsGrid.push(...this.getLinePoints(uvs[i][0], uvs[i][1], uvs[i + 1][0], uvs[i + 1][1]));
@@ -343,14 +368,14 @@ class ReassignTool extends BaseTool {
     });
 
     const negSeedsGrid: [number, number][] = [];
-    this.negativeTraces.forEach(trace => {
+    negativeTraces.forEach(trace => {
       const uvs = trace.map(p => this.ijkToUv(this.worldToRoundedIjk(imageData, p), sliceAxis));
       for (let i = 0; i < uvs.length - 1; i++) {
         negSeedsGrid.push(...this.getLinePoints(uvs[i][0], uvs[i][1], uvs[i + 1][0], uvs[i + 1][1]));
       }
     });
 
-    if (!posSeedsGrid.length || !negSeedsGrid.length) {
+    if (!posSeedsGrid.length && !negSeedsGrid.length) {
       return;
     }
 
@@ -370,6 +395,22 @@ class ReassignTool extends BaseTool {
       sliceIndex,
       originalValues: backupArray,
     });
+
+    this.applyTraceSeedsToSlice({
+      scalarData,
+      dimensions,
+      sliceAxis,
+      sliceIndex,
+      posSeedsGrid,
+      negSeedsGrid,
+      segmentIndex,
+    });
+
+    if (!posSeedsGrid.length || !negSeedsGrid.length) {
+      this.commitScalarData(labelmapTarget, scalarData);
+      this.notifySegmentationModified(sm, viewport, viewportId, segmentationId);
+      return;
+    }
 
     // Run simple BFS Voronoi on the 2D slice grid
     const dist = new Float32Array(W * H);
@@ -445,11 +486,210 @@ class ReassignTool extends BaseTool {
       }
     }
 
+    this.commitScalarData(labelmapTarget, scalarData);
+    this.notifySegmentationModified(sm, viewport, viewportId, segmentationId);
+  }
+
+  getScalarData(labelmapVolume: any) {
+    return (
+      labelmapVolume.getScalarData?.() ??
+      labelmapVolume.voxelManager?.getScalarData?.() ??
+      labelmapVolume.voxelManager?.getCompleteScalarDataArray?.() ??
+      labelmapVolume.getPixelData?.()
+    );
+  }
+
+  getViewportSliceKey(viewport: any, worldPoint?: [number, number, number]) {
+    const imageId = viewport.getCurrentImageId?.();
+    if (imageId) {
+      return `image:${imageId}`;
+    }
+
+    const imageIdIndex = viewport.getCurrentImageIdIndex?.();
+    if (imageIdIndex !== undefined && imageIdIndex !== null) {
+      return `imageIndex:${imageIdIndex}`;
+    }
+
+    const viewReference = viewport.getViewReference?.();
+    if (viewReference?.sliceIndex !== undefined) {
+      const normal = viewReference.viewPlaneNormal?.map(v => Number(v).toFixed(3)).join(',');
+      return `viewRef:${normal ?? 'unknown'}:${viewReference.sliceIndex}`;
+    }
+
+    const camera = viewport.getCamera?.();
+    const normal = camera?.viewPlaneNormal;
+    const focalPoint = worldPoint ?? camera?.focalPoint;
+    if (normal && focalPoint) {
+      const roundedNormal = normal.map(v => Number(v).toFixed(3)).join(',');
+      const planeOffset = normal
+        .reduce((sum, value, index) => sum + value * focalPoint[index], 0)
+        .toFixed(2);
+      return `plane:${roundedNormal}:${planeOffset}`;
+    }
+
+    return `viewport:${viewport.id}`;
+  }
+
+  getOrCreateTraceSet(viewport: any) {
+    const sliceKey = this.activeTraceSliceKey ?? this.getViewportSliceKey(viewport);
+    if (!this.traceSet || this.traceSet.sliceKey !== sliceKey) {
+      this.traceSet = {
+        sliceKey,
+        positive: [],
+        negative: [],
+      };
+    }
+    return this.traceSet;
+  }
+
+  getLabelmapVolume(segmentationService: any, activeSeg: any, segmentationId: string) {
+    const serviceVolume = segmentationService.getLabelmapVolume?.(segmentationId);
+    if (serviceVolume) {
+      return serviceVolume;
+    }
+
+    const volumeId = activeSeg.representationData?.Labelmap?.volumeId;
+    return volumeId ? cache.getVolume(volumeId) : null;
+  }
+
+  getLabelmapEditData(segmentationService: any, activeSeg: any, segmentationId: string, viewport: any) {
+    const labelmapVolume = this.getLabelmapVolume(segmentationService, activeSeg, segmentationId);
+    if (labelmapVolume) {
+      const scalarData = this.getScalarData(labelmapVolume);
+      if (!scalarData) {
+        return null;
+      }
+      return {
+        target: labelmapVolume,
+        scalarData,
+        dimensions: labelmapVolume.dimensions,
+        imageData: labelmapVolume.imageData,
+      };
+    }
+
+    const labelmapData = activeSeg.representationData?.Labelmap;
+    const imageIds = labelmapData?.imageIds;
+    if (!imageIds?.length) {
+      return null;
+    }
+
+    const referencedImageIds = labelmapData.referencedImageIds;
+    const currentImageId = viewport.getCurrentImageId?.();
+    const currentImageIdIndex = viewport.getCurrentImageIdIndex?.() ?? 0;
+    const referencedImageIdIndex = referencedImageIds?.indexOf(currentImageId) ?? -1;
+    const labelmapImageIndex =
+      referencedImageIdIndex >= 0 ? referencedImageIdIndex : currentImageIdIndex;
+    const labelmapImageId = imageIds[labelmapImageIndex] ?? imageIds[currentImageIdIndex] ?? imageIds[0];
+    const labelmapImage = cache.getImage(labelmapImageId);
+    if (!labelmapImage) {
+      return null;
+    }
+
+    const scalarData = this.getScalarData(labelmapImage);
+    if (!scalarData) {
+      return null;
+    }
+
+    const viewportImageData = viewport.getImageData?.();
+    const imageData = viewportImageData?.imageData ?? viewportImageData ?? labelmapImage.imageData;
+    const columns =
+      labelmapImage.columns ??
+      labelmapImage.width ??
+      labelmapImage.imageData?.getDimensions?.()[0] ??
+      viewportImageData?.dimensions?.[0];
+    const rows =
+      labelmapImage.rows ??
+      labelmapImage.height ??
+      labelmapImage.imageData?.getDimensions?.()[1] ??
+      viewportImageData?.dimensions?.[1];
+
+    if (!columns || !rows || !imageData) {
+      return null;
+    }
+
+    return {
+      target: labelmapImage,
+      scalarData,
+      dimensions: [columns, rows, 1],
+      imageData,
+      forceSliceInfo: { sliceAxis: 2, sliceIndex: 0 },
+    };
+  }
+
+  commitScalarData(labelmapVolume: any, scalarData: any) {
+    labelmapVolume.voxelManager?.setScalarData?.(scalarData);
+    labelmapVolume.voxelManager?.modified?.();
+    labelmapVolume.imageData?.modified?.();
+    labelmapVolume.modified?.();
+  }
+
+  notifySegmentationModified(
+    servicesManager: any,
+    viewport: any,
+    viewportId: string,
+    segmentationId: string
+  ) {
+    eventTarget.dispatchEvent(
+      new CustomEvent(csToolsEnums.Events.SEGMENTATION_DATA_MODIFIED, {
+        detail: { segmentationId },
+      })
+    );
     triggerSegmentationEvents.triggerSegmentationRepresentationModified(
       viewportId,
       segmentationId,
       LABELMAP
     );
+    viewport?.render?.();
+    servicesManager.services.cornerstoneViewportService?.getRenderingEngine?.()?.render?.();
+  }
+
+  applyTraceSeedsToSlice({
+    scalarData,
+    dimensions,
+    sliceAxis,
+    sliceIndex,
+    posSeedsGrid,
+    negSeedsGrid,
+    segmentIndex,
+  }: {
+    scalarData: any;
+    dimensions: number[];
+    sliceAxis: number;
+    sliceIndex: number;
+    posSeedsGrid: [number, number][];
+    negSeedsGrid: [number, number][];
+    segmentIndex: number;
+  }) {
+    const [X, Y] = dimensions;
+    const applySeed = ([u, v]: [number, number], value: number) => {
+      const radius = 2;
+      for (let dv = -radius; dv <= radius; dv++) {
+        for (let du = -radius; du <= radius; du++) {
+          if (du * du + dv * dv > radius * radius) {
+            continue;
+          }
+          const ijk = this.uvToIjk(u + du, v + dv, sliceAxis, sliceIndex);
+          if (
+            ijk[0] < 0 ||
+            ijk[0] >= dimensions[0] ||
+            ijk[1] < 0 ||
+            ijk[1] >= dimensions[1] ||
+            ijk[2] < 0 ||
+            ijk[2] >= dimensions[2]
+          ) {
+            continue;
+          }
+          const scalarIdx = ijk[0] + ijk[1] * X + ijk[2] * X * Y;
+          const currentVoxelVal = scalarData[scalarIdx];
+          if (currentVoxelVal === 0 || currentVoxelVal === segmentIndex) {
+            scalarData[scalarIdx] = value;
+          }
+        }
+      }
+    };
+
+    posSeedsGrid.forEach(seed => applySeed(seed, segmentIndex));
+    negSeedsGrid.forEach(seed => applySeed(seed, 0));
   }
 
   worldToRoundedIjk(imageData: any, worldPoint: [number, number, number]): [number, number, number] {
