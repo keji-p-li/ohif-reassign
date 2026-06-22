@@ -5,7 +5,7 @@ import {
   segmentation as cstSegmentation,
 } from '@cornerstonejs/tools';
 import { cache, eventTarget, utilities as csUtils, getEnabledElement } from '@cornerstonejs/core';
-import { runReassignVoronoi2D } from '@quiqvu/region-grow-wasm';
+import { runReassignVoronoi2D } from './algorithms/regionGrow';
 
 const { triggerSegmentationEvents } = cstSegmentation;
 const { Labelmap: LABELMAP } = csToolsEnums.SegmentationRepresentations;
@@ -250,7 +250,7 @@ class ReassignTool extends BaseTool {
     this.activeTraceSliceKey = null;
     this.activeTraceType = null;
 
-    this.runPlaceholderAlgorithm(enabledElement);
+    void this.runPlaceholderAlgorithm(enabledElement);
     enabledElement.viewport.render();
   };
 
@@ -298,7 +298,7 @@ class ReassignTool extends BaseTool {
     }
   };
 
-  runPlaceholderAlgorithm(enabledElement: any) {
+  async runPlaceholderAlgorithm(enabledElement: any) {
     if (!this.traceSet || (this.traceSet.positive.length === 0 && this.traceSet.negative.length === 0)) {
       return;
     }
@@ -397,15 +397,20 @@ class ReassignTool extends BaseTool {
       originalValues: backupArray,
     });
 
-    runReassignVoronoi2D({
-      scalarData,
-      dimensions,
-      sliceAxis,
-      sliceIndex,
-      posSeedsGrid,
-      negSeedsGrid,
-      segmentIndex,
-    });
+    try {
+      await runReassignVoronoi2D({
+        scalarData,
+        dimensions,
+        sliceAxis,
+        sliceIndex,
+        posSeedsGrid,
+        negSeedsGrid,
+        segmentIndex,
+      });
+    } catch (error) {
+      console.error('Reassign region-grow WASM algorithm failed', error);
+      return;
+    }
 
     this.commitScalarData(labelmapTarget, scalarData);
     this.notifySegmentationModified(sm, viewport, viewportId, segmentationId);

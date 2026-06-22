@@ -28,7 +28,9 @@
     "dev:my-extension": "yarn run dev",
     "build": "cross-env NODE_ENV=production webpack --config .webpack/webpack.prod.js",
     "build:package": "yarn run build",
-    "start": "yarn run dev"
+    "start": "yarn run dev",
+    "wasm:build": "node scripts/build-region-grow-wasm.mjs",
+    "test:region-grow": "cmake -S native/region-grow -B native/region-grow/build && cmake --build native/region-grow/build --config Release && ctest --test-dir native/region-grow/build --output-on-failure -C Release"
   },
   "peerDependencies": {
     "@ohif/core": "^3.13.0-beta.68",
@@ -45,8 +47,7 @@
     "webpack-merge": "^5.7.3"
   },
   "dependencies": {
-    "@babel/runtime": "^7.20.13",
-    "@quiqvu/region-grow-wasm": "0.0.1"
+    "@babel/runtime": "^7.20.13"
   },
   "devDependencies": {
     "@babel/core": "7.28.0",
