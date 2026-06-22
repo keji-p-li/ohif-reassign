@@ -5,6 +5,7 @@ import {
   segmentation as cstSegmentation,
 } from '@cornerstonejs/tools';
 import { cache, eventTarget, utilities as csUtils, getEnabledElement } from '@cornerstonejs/core';
+import { runReassignVoronoi2D } from '@quiqvu/region-grow-wasm';
 
 const { triggerSegmentationEvents } = cstSegmentation;
 const { Labelmap: LABELMAP } = csToolsEnums.SegmentationRepresentations;
@@ -327,7 +328,7 @@ class ReassignTool extends BaseTool {
     if (!editData) return;
 
     const { target: labelmapTarget, scalarData, dimensions, imageData, forceSliceInfo } = editData;
-    const [X, Y, Z] = dimensions;
+    const [X, Y] = dimensions;
 
     // Convert world points to rounded 3D voxel indices [i, j, k].
     // Cornerstone can return fractional index coordinates for world points.
@@ -396,7 +397,7 @@ class ReassignTool extends BaseTool {
       originalValues: backupArray,
     });
 
-    this.applyTraceSeedsToSlice({
+    runReassignVoronoi2D({
       scalarData,
       dimensions,
       sliceAxis,
@@ -405,86 +406,6 @@ class ReassignTool extends BaseTool {
       negSeedsGrid,
       segmentIndex,
     });
-
-    if (!posSeedsGrid.length || !negSeedsGrid.length) {
-      this.commitScalarData(labelmapTarget, scalarData);
-      this.notifySegmentationModified(sm, viewport, viewportId, segmentationId);
-      return;
-    }
-
-    // Run simple BFS Voronoi on the 2D slice grid
-    const dist = new Float32Array(W * H);
-    dist.fill(Infinity);
-    const label = new Uint8Array(W * H); // 1 = positive, 2 = negative
-
-    const queue: number[] = [];
-
-    // Push positive seeds
-    posSeedsGrid.forEach(([u, v]) => {
-      if (u >= 0 && u < W && v >= 0 && v < H) {
-        const idx = u + v * W;
-        dist[idx] = 0;
-        label[idx] = 1;
-        queue.push(idx);
-      }
-    });
-
-    // Push negative seeds
-    negSeedsGrid.forEach(([u, v]) => {
-      if (u >= 0 && u < W && v >= 0 && v < H) {
-        const idx = u + v * W;
-        dist[idx] = 0;
-        label[idx] = 2;
-        queue.push(idx);
-      }
-    });
-
-    // BFS Queue loop
-    let head = 0;
-    const dirs = [
-      [-1, 0], [1, 0], [0, -1], [0, 1]
-    ];
-
-    while (head < queue.length) {
-      const currIdx = queue[head++];
-      const u = currIdx % W;
-      const v = Math.floor(currIdx / W);
-      const currDist = dist[currIdx];
-      const currLabel = label[currIdx];
-
-      for (let i = 0; i < 4; i++) {
-        const nu = u + dirs[i][0];
-        const nv = v + dirs[i][1];
-        if (nu >= 0 && nu < W && nv >= 0 && nv < H) {
-          const nidx = nu + nv * W;
-          if (dist[nidx] === Infinity) {
-            dist[nidx] = currDist + 1;
-            label[nidx] = currLabel;
-            queue.push(nidx);
-          }
-        }
-      }
-    }
-
-    // Apply the classification results back to the segment (protect other segments)
-    idx2d = 0;
-    for (let v = 0; v < H; v++) {
-      for (let u = 0; u < W; u++) {
-        const ijk = this.uvToIjk(u, v, sliceAxis, sliceIndex);
-        const scalarIdx = ijk[0] + ijk[1] * X + ijk[2] * X * Y;
-        const currentVoxelVal = scalarData[scalarIdx];
-
-        if (currentVoxelVal === 0 || currentVoxelVal === segmentIndex) {
-          const classification = label[idx2d];
-          if (classification === 1) {
-            scalarData[scalarIdx] = segmentIndex;
-          } else if (classification === 2) {
-            scalarData[scalarIdx] = 0;
-          }
-        }
-        idx2d++;
-      }
-    }
 
     this.commitScalarData(labelmapTarget, scalarData);
     this.notifySegmentationModified(sm, viewport, viewportId, segmentationId);
@@ -641,55 +562,6 @@ class ReassignTool extends BaseTool {
     );
     viewport?.render?.();
     servicesManager.services.cornerstoneViewportService?.getRenderingEngine?.()?.render?.();
-  }
-
-  applyTraceSeedsToSlice({
-    scalarData,
-    dimensions,
-    sliceAxis,
-    sliceIndex,
-    posSeedsGrid,
-    negSeedsGrid,
-    segmentIndex,
-  }: {
-    scalarData: any;
-    dimensions: number[];
-    sliceAxis: number;
-    sliceIndex: number;
-    posSeedsGrid: [number, number][];
-    negSeedsGrid: [number, number][];
-    segmentIndex: number;
-  }) {
-    const [X, Y] = dimensions;
-    const applySeed = ([u, v]: [number, number], value: number) => {
-      const radius = 2;
-      for (let dv = -radius; dv <= radius; dv++) {
-        for (let du = -radius; du <= radius; du++) {
-          if (du * du + dv * dv > radius * radius) {
-            continue;
-          }
-          const ijk = this.uvToIjk(u + du, v + dv, sliceAxis, sliceIndex);
-          if (
-            ijk[0] < 0 ||
-            ijk[0] >= dimensions[0] ||
-            ijk[1] < 0 ||
-            ijk[1] >= dimensions[1] ||
-            ijk[2] < 0 ||
-            ijk[2] >= dimensions[2]
-          ) {
-            continue;
-          }
-          const scalarIdx = ijk[0] + ijk[1] * X + ijk[2] * X * Y;
-          const currentVoxelVal = scalarData[scalarIdx];
-          if (currentVoxelVal === 0 || currentVoxelVal === segmentIndex) {
-            scalarData[scalarIdx] = value;
-          }
-        }
-      }
-    };
-
-    posSeedsGrid.forEach(seed => applySeed(seed, segmentIndex));
-    negSeedsGrid.forEach(seed => applySeed(seed, 0));
   }
 
   worldToRoundedIjk(imageData: any, worldPoint: [number, number, number]): [number, number, number] {
