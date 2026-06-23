@@ -4,6 +4,8 @@ export type GridPoint = [number, number];
 
 export type ReassignVoronoiInput = {
   scalarData: ArrayLike<number> & { [index: number]: number };
+  intensityData?: ArrayLike<number> & { [index: number]: number };
+  intensityDimensions?: number[];
   dimensions: number[];
   sliceAxis: number;
   sliceIndex: number;
@@ -29,6 +31,8 @@ function getRegionGrowModule() {
 
 export async function runReassignVoronoi2D({
   scalarData,
+  intensityData,
+  intensityDimensions,
   dimensions,
   sliceAxis,
   sliceIndex,
@@ -39,15 +43,18 @@ export async function runReassignVoronoi2D({
 }: ReassignVoronoiInput): Promise<ReassignVoronoiResult> {
   const module = await getRegionGrowModule();
   const [xDim, yDim] = dimensions;
+  const [intensityXDim, intensityYDim] = intensityDimensions ?? dimensions;
   const { width, height } = getSliceDimensions(dimensions, sliceAxis);
   const voxelCount = width * height;
 
   const labelBytes = voxelCount * Uint16Array.BYTES_PER_ELEMENT;
+  const intensityBytes = intensityData ? voxelCount * Float32Array.BYTES_PER_ELEMENT : 0;
   const posBytes = posSeedsGrid.length * 2 * Int32Array.BYTES_PER_ELEMENT;
   const negBytes = negSeedsGrid.length * 2 * Int32Array.BYTES_PER_ELEMENT;
   const outBytes = 2 * Int32Array.BYTES_PER_ELEMENT;
 
   const labelPtr = module._malloc(labelBytes);
+  const intensityPtr = intensityBytes ? module._malloc(intensityBytes) : 0;
   const posPtr = posBytes ? module._malloc(posBytes) : 0;
   const negPtr = negBytes ? module._malloc(negBytes) : 0;
   const outPtr = module._malloc(outBytes);
@@ -65,6 +72,22 @@ export async function runReassignVoronoi2D({
 
     module.HEAPU16.set(labels, labelPtr / Uint16Array.BYTES_PER_ELEMENT);
 
+    if (intensityData && intensityPtr) {
+      const intensities = new Float32Array(voxelCount);
+      const sourceDimensions = intensityDimensions ?? dimensions;
+      idx2d = 0;
+      for (let v = 0; v < height; v++) {
+        for (let u = 0; u < width; u++) {
+          const ijk = uvToIjk(u, v, sliceAxis, sliceIndex);
+          const clampedIjk = clampIjk(ijk, sourceDimensions);
+          const scalarIdx =
+            clampedIjk[0] + clampedIjk[1] * intensityXDim + clampedIjk[2] * intensityXDim * intensityYDim;
+          intensities[idx2d++] = intensityData[scalarIdx];
+        }
+      }
+      module.HEAPF32.set(intensities, intensityPtr / Float32Array.BYTES_PER_ELEMENT);
+    }
+
     if (posBytes) {
       module.HEAP32.set(flattenSeeds(posSeedsGrid), posPtr / Int32Array.BYTES_PER_ELEMENT);
     }
@@ -74,6 +97,7 @@ export async function runReassignVoronoi2D({
 
     const ok = module._rg_run_reassign_voronoi_2d(
       labelPtr,
+      intensityPtr,
       width,
       height,
       segmentIndex,
@@ -113,6 +137,9 @@ export async function runReassignVoronoi2D({
     };
   } finally {
     module._free(labelPtr);
+    if (intensityPtr) {
+      module._free(intensityPtr);
+    }
     if (posPtr) {
       module._free(posPtr);
     }
@@ -150,4 +177,12 @@ function uvToIjk(u: number, v: number, sliceAxis: number, sliceIndex: number): [
     return [u, sliceIndex, v];
   }
   return [u, v, sliceIndex];
+}
+
+function clampIjk(ijk: [number, number, number], dimensions: number[]): [number, number, number] {
+  return [
+    Math.max(0, Math.min(dimensions[0] - 1, ijk[0])),
+    Math.max(0, Math.min(dimensions[1] - 1, ijk[1])),
+    Math.max(0, Math.min(dimensions[2] - 1, ijk[2])),
+  ];
 }

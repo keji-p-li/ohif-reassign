@@ -380,6 +380,8 @@ class ReassignTool extends BaseTool {
       return;
     }
 
+    const intensityData = this.getViewportIntensityData(viewport);
+
     // Backup current slice voxel values for Undo support
     const backupArray = new Int16Array(W * H);
     let idx2d = 0;
@@ -400,6 +402,8 @@ class ReassignTool extends BaseTool {
     try {
       await runReassignVoronoi2D({
         scalarData,
+        intensityData: intensityData?.scalarData,
+        intensityDimensions: intensityData?.dimensions,
         dimensions,
         sliceAxis,
         sliceIndex,
@@ -423,6 +427,38 @@ class ReassignTool extends BaseTool {
       labelmapVolume.voxelManager?.getCompleteScalarDataArray?.() ??
       labelmapVolume.getPixelData?.()
     );
+  }
+
+  getViewportIntensityData(viewport: any) {
+    const viewportImageData = viewport.getImageData?.();
+    const imageData = viewportImageData?.imageData ?? viewportImageData;
+    const vtkScalars = imageData?.getPointData?.()?.getScalars?.()?.getData?.();
+    const scalarData =
+      viewportImageData?.scalarData ??
+      imageData?.scalarData ??
+      vtkScalars ??
+      this.getScalarData(imageData);
+
+    const vtkDimensions = imageData?.getDimensions?.();
+    const dimensions =
+      viewportImageData?.dimensions ??
+      imageData?.dimensions ??
+      (vtkDimensions ? [vtkDimensions[0], vtkDimensions[1], vtkDimensions[2] ?? 1] : null);
+
+    if (scalarData && dimensions) {
+      return { scalarData, dimensions };
+    }
+
+    const currentImageId = viewport.getCurrentImageId?.();
+    const image = currentImageId ? cache.getImage(currentImageId) : null;
+    const imageScalarData = image ? this.getScalarData(image) : null;
+    const columns = image?.columns ?? image?.width;
+    const rows = image?.rows ?? image?.height;
+    if (imageScalarData && columns && rows) {
+      return { scalarData: imageScalarData, dimensions: [columns, rows, 1] };
+    }
+
+    return null;
   }
 
   getViewportSliceKey(viewport: any, worldPoint?: [number, number, number]) {

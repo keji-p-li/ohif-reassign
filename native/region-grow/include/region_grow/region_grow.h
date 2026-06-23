@@ -15,6 +15,8 @@ struct ReassignVoronoiInput {
   int height = 0;
   std::uint16_t segmentIndex = 1;
   int seedRadius = 2;
+  const float* intensities = nullptr;
+  int intensityCount = 0;
   std::vector<GridPoint> positiveSeeds;
   std::vector<GridPoint> negativeSeeds;
 };

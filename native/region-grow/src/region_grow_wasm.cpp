@@ -11,6 +11,7 @@ extern "C" {
 
 int rg_run_reassign_voronoi_2d(
   std::uint16_t* labels,
+  const float* intensities,
   int width,
   int height,
   std::uint16_t segmentIndex,
@@ -33,6 +34,8 @@ int rg_run_reassign_voronoi_2d(
   input.height = height;
   input.segmentIndex = segmentIndex;
   input.seedRadius = seedRadius;
+  input.intensities = intensities;
+  input.intensityCount = intensities ? width * height : 0;
 
   input.positiveSeeds.reserve(positiveSeedCount);
   for (int i = 0; i < positiveSeedCount; ++i) {

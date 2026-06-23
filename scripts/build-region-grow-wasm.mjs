@@ -29,7 +29,7 @@ const args = [
   '-s',
   "EXPORTED_FUNCTIONS=['_malloc','_free','_rg_run_reassign_voronoi_2d']",
   '-s',
-  "EXPORTED_RUNTIME_METHODS=['HEAPU8','HEAPU16','HEAP32']",
+  "EXPORTED_RUNTIME_METHODS=['HEAPU8','HEAPU16','HEAP32','HEAPF32']",
   '-o',
   output,
 ];
