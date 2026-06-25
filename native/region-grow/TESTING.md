@@ -17,7 +17,7 @@ ctest --test-dir quiqvu-extensions/reassign/native/region-grow/build --output-on
 ## Current Coverage
 
 - Positive-only traces write only a small circular seed disk.
-- Positive and negative seeds split a 1D slice through BFS Voronoi classification.
+- Positive and negative seeds split a 1D slice through the no-intensity fallback classifier.
 - Voxels belonging to unrelated segments are protected.
 - A 512x512 performance smoke test classifies a full slice and prints elapsed time.
 

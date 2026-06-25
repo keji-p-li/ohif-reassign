@@ -27,7 +27,7 @@ const args = [
   '-s',
   'ALLOW_MEMORY_GROWTH=1',
   '-s',
-  "EXPORTED_FUNCTIONS=['_malloc','_free','_rg_run_reassign_voronoi_2d']",
+  "EXPORTED_FUNCTIONS=['_malloc','_free','_rg_run_reassign_slice_region_grow_2d']",
   '-s',
   "EXPORTED_RUNTIME_METHODS=['HEAPU8','HEAPU16','HEAP32','HEAPF32']",
   '-o',
@@ -40,7 +40,7 @@ let result = spawnSync('emcc', args, {
 });
 
 if (result.error?.code === 'ENOENT' && process.platform === 'win32') {
-  result = spawnSync('emcc.bat', args, {
+  result = spawnSync('cmd.exe', ['/d', '/s', '/c', 'emcc.bat', ...args], {
     cwd: rootDir,
     stdio: 'inherit',
   });

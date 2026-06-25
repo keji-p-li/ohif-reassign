@@ -5,12 +5,13 @@ import {
   segmentation as cstSegmentation,
 } from '@cornerstonejs/tools';
 import { cache, eventTarget, utilities as csUtils, getEnabledElement } from '@cornerstonejs/core';
-import { runReassignVoronoi2D } from './algorithms/regionGrow';
+import { runReassignSliceRegionGrow2D } from './algorithms/regionGrow';
 
 const { triggerSegmentationEvents } = cstSegmentation;
 const { Labelmap: LABELMAP } = csToolsEnums.SegmentationRepresentations;
 
 const { transformWorldToIndex } = csUtils;
+const { DefaultHistoryMemo } = csUtils.HistoryMemo;
 
 type TraceSet = {
   sliceKey: string;
@@ -18,6 +19,17 @@ type TraceSet = {
   negative: [number, number, number][][];
 };
 
+type SliceEditSnapshot = {
+  target: any;
+  segmentationId: string;
+  viewportId: string;
+  sliceAxis: number;
+  sliceIndex: number;
+  dimensions: number[];
+  values: Uint16Array;
+};
+
+/** Cornerstone tool that records include/exclude traces and applies native slice region-growing to the active labelmap. */
 class ReassignTool extends BaseTool {
   static toolName = 'ReassignTool';
   static sharedServicesManager: any = null;
@@ -28,19 +40,11 @@ class ReassignTool extends BaseTool {
   activeTraceSliceKey: string | null = null;
   traceSet: TraceSet | null = null;
 
-  // Undo stack for segmentations
-  segmentUndoStack: {
-    segmentationId: string;
-    sliceAxis: number;
-    sliceIndex: number;
-    originalValues: Int16Array;
-  }[] = [];
-
   // Current draw mode: 'include' (positive) or 'exclude' (negative)
   drawMode: 'include' | 'exclude' = 'include';
 
-  // Keyboard listener flag
-  keyListenerAdded = false;
+  // Escape is local tool behavior; include/exclude toggling is registered through OHIF hotkeys.
+  escapeListenerAdded = false;
   // Services manager reference
   servicesManager: any = null;
 
@@ -63,93 +67,37 @@ class ReassignTool extends BaseTool {
     this.activeTraceType = null;
   }
 
-  undoChange(servicesManager: any) {
-    const sm = servicesManager ?? this.servicesManager ?? ReassignTool.sharedServicesManager;
-    if (this.segmentUndoStack.length === 0) {
-      console.log('Undo stack is empty');
-      return;
-    }
-    const lastChange = this.segmentUndoStack.pop();
-    const { segmentationId, sliceAxis, sliceIndex, originalValues } = lastChange;
-
-    const segmentation = cstSegmentation.state.getSegmentation(segmentationId);
-    if (!segmentation) return;
-
-    const labelmapData = segmentation.representationData.Labelmap;
-    if (!labelmapData || !labelmapData.volumeId) return;
-
-    const labelmapVolume = cache.getVolume(labelmapData.volumeId);
-    if (!labelmapVolume) return;
-
-    const scalarData = this.getScalarData(labelmapVolume);
-    if (!scalarData) return;
-    const dimensions = labelmapVolume.dimensions;
-    const [X, Y, Z] = dimensions;
-
-    // Determine 2D dimensions
-    let W = 0, H = 0;
-    if (sliceAxis === 0) {
-      W = dimensions[1];
-      H = dimensions[2];
-    } else if (sliceAxis === 1) {
-      W = dimensions[0];
-      H = dimensions[2];
-    } else {
-      W = dimensions[0];
-      H = dimensions[1];
-    }
-
-    // Restore original values
-    let idx2d = 0;
-    for (let v = 0; v < H; v++) {
-      for (let u = 0; u < W; u++) {
-        let i = 0, j = 0, k = 0;
-        if (sliceAxis === 0) {
-          i = sliceIndex; j = u; k = v;
-        } else if (sliceAxis === 1) {
-          i = u; j = sliceIndex; k = v;
-        } else {
-          i = u; j = v; k = sliceIndex;
-        }
-        const scalarIdx = i + j * X + k * X * Y;
-        scalarData[scalarIdx] = originalValues[idx2d++];
-      }
-    }
-
-    this.commitScalarData(labelmapVolume, scalarData);
-    const { viewportGridService, cornerstoneViewportService } = sm.services;
-    const viewportId = viewportGridService.getActiveViewportId();
-    const viewport = cornerstoneViewportService.getCornerstoneViewport(viewportId);
-    this.notifySegmentationModified(sm, viewport, viewportId, segmentationId);
+  undoChange() {
+    DefaultHistoryMemo.undo();
   }
 
   onSetToolActive = () => {
-    this.addKeyListener();
+    this.addEscapeListener();
   };
 
   onSetToolPassive = () => {
     this.clearTraces();
-    this.removeKeyListener();
+    this.removeEscapeListener();
   };
 
   onSetToolDisabled = () => {
     this.clearTraces();
-    this.removeKeyListener();
+    this.removeEscapeListener();
   };
 
-  addKeyListener() {
-    if (this.keyListenerAdded) return;
-    window.addEventListener('keydown', this.keydownHandler, true);
-    this.keyListenerAdded = true;
+  addEscapeListener() {
+    if (this.escapeListenerAdded) return;
+    window.addEventListener('keydown', this.escapeKeyHandler, true);
+    this.escapeListenerAdded = true;
   }
 
-  removeKeyListener() {
-    if (!this.keyListenerAdded) return;
-    window.removeEventListener('keydown', this.keydownHandler, true);
-    this.keyListenerAdded = false;
+  removeEscapeListener() {
+    if (!this.escapeListenerAdded) return;
+    window.removeEventListener('keydown', this.escapeKeyHandler, true);
+    this.escapeListenerAdded = false;
   }
 
-  keydownHandler = (evt: KeyboardEvent) => {
+  escapeKeyHandler = (evt: KeyboardEvent) => {
     if (evt.key === 'Escape') {
       this.clearTraces();
       const sm = this.servicesManager ?? ReassignTool.sharedServicesManager;
@@ -194,8 +142,8 @@ class ReassignTool extends BaseTool {
   }
 
   preMouseDownCallback = (evt: any): boolean => {
-    if (!this.keyListenerAdded) {
-      this.addKeyListener();
+    if (!this.escapeListenerAdded) {
+      this.addEscapeListener();
     }
     const eventDetail = evt.detail;
     const { currentPoints, element } = eventDetail;
@@ -238,6 +186,10 @@ class ReassignTool extends BaseTool {
     const enabledElement = getEnabledElement(element);
     if (!enabledElement) return;
     this.activeTrace.push(currentPoints.world);
+    if (!this.activeTraceType) {
+      this.clearTraces();
+      return;
+    }
 
     if (this.activeTraceType === 'positive') {
       this.getOrCreateTraceSet(enabledElement.viewport).positive.push(this.activeTrace);
@@ -250,7 +202,7 @@ class ReassignTool extends BaseTool {
     this.activeTraceSliceKey = null;
     this.activeTraceType = null;
 
-    void this.runPlaceholderAlgorithm(enabledElement);
+    void this.runSliceRegionGrow(enabledElement);
     enabledElement.viewport.render();
   };
 
@@ -298,7 +250,8 @@ class ReassignTool extends BaseTool {
     }
   };
 
-  async runPlaceholderAlgorithm(enabledElement: any) {
+  /** Converts current-slice traces into seed pixels, runs native growth, and notifies OHIF of labelmap edits. */
+  async runSliceRegionGrow(enabledElement: any) {
     if (!this.traceSet || (this.traceSet.positive.length === 0 && this.traceSet.negative.length === 0)) {
       return;
     }
@@ -328,7 +281,6 @@ class ReassignTool extends BaseTool {
     if (!editData) return;
 
     const { target: labelmapTarget, scalarData, dimensions, imageData, forceSliceInfo } = editData;
-    const [X, Y] = dimensions;
 
     // Convert world points to rounded 3D voxel indices [i, j, k].
     // Cornerstone can return fractional index coordinates for world points.
@@ -382,25 +334,19 @@ class ReassignTool extends BaseTool {
 
     const intensityData = this.getViewportIntensityData(viewport);
 
-    // Backup current slice voxel values for Undo support
-    const backupArray = new Int16Array(W * H);
-    let idx2d = 0;
-    for (let v = 0; v < H; v++) {
-      for (let u = 0; u < W; u++) {
-        const ijk = this.uvToIjk(u, v, sliceAxis, sliceIndex);
-        const idx = ijk[0] + ijk[1] * X + ijk[2] * X * Y;
-        backupArray[idx2d++] = scalarData[idx];
-      }
-    }
-    this.segmentUndoStack.push({
+    const beforeSnapshot = this.captureSliceSnapshot(
+      labelmapTarget,
+      scalarData,
+      dimensions,
       segmentationId,
+      viewportId,
       sliceAxis,
-      sliceIndex,
-      originalValues: backupArray,
-    });
+      sliceIndex
+    );
 
+    let result;
     try {
-      await runReassignVoronoi2D({
+      result = await runReassignSliceRegionGrow2D({
         scalarData,
         intensityData: intensityData?.scalarData,
         intensityDimensions: intensityData?.dimensions,
@@ -416,6 +362,19 @@ class ReassignTool extends BaseTool {
       return;
     }
 
+    if (result.changedVoxels > 0) {
+      const afterSnapshot = this.captureSliceSnapshot(
+        labelmapTarget,
+        scalarData,
+        dimensions,
+        segmentationId,
+        viewportId,
+        sliceAxis,
+        sliceIndex
+      );
+      this.pushSliceEditMemo(sm, beforeSnapshot, afterSnapshot);
+    }
+
     this.commitScalarData(labelmapTarget, scalarData);
     this.notifySegmentationModified(sm, viewport, viewportId, segmentationId);
   }
@@ -429,6 +388,7 @@ class ReassignTool extends BaseTool {
     );
   }
 
+  /** Finds the source-image scalar array that corresponds to the active viewport, separate from the labelmap. */
   getViewportIntensityData(viewport: any) {
     const viewportImageData = viewport.getImageData?.();
     const imageData = viewportImageData?.imageData ?? viewportImageData;
@@ -461,6 +421,7 @@ class ReassignTool extends BaseTool {
     return null;
   }
 
+  /** Builds a stable key for the visible image plane so traces are shown and reused only on their original slice. */
   getViewportSliceKey(viewport: any, worldPoint?: [number, number, number]) {
     const imageId = viewport.getCurrentImageId?.();
     if (imageId) {
@@ -514,6 +475,7 @@ class ReassignTool extends BaseTool {
     return volumeId ? cache.getVolume(volumeId) : null;
   }
 
+  /** Returns the editable labelmap target for both volume labelmaps and stack/image labelmaps. */
   getLabelmapEditData(segmentationService: any, activeSeg: any, segmentationId: string, viewport: any) {
     const labelmapVolume = this.getLabelmapVolume(segmentationService, activeSeg, segmentationId);
     if (labelmapVolume) {
@@ -585,6 +547,78 @@ class ReassignTool extends BaseTool {
     labelmapVolume.modified?.();
   }
 
+  /** Captures one labelmap slice for OHIF history restore without copying the full volume. */
+  captureSliceSnapshot(
+    target: any,
+    scalarData: any,
+    dimensions: number[],
+    segmentationId: string,
+    viewportId: string,
+    sliceAxis: number,
+    sliceIndex: number
+  ): SliceEditSnapshot {
+    const [X, Y] = dimensions;
+    const { width, height } = this.getSliceDimensions(dimensions, sliceAxis);
+    const values = new Uint16Array(width * height);
+    let idx2d = 0;
+
+    for (let v = 0; v < height; v++) {
+      for (let u = 0; u < width; u++) {
+        const ijk = this.uvToIjk(u, v, sliceAxis, sliceIndex);
+        const idx = ijk[0] + ijk[1] * X + ijk[2] * X * Y;
+        values[idx2d++] = scalarData[idx];
+      }
+    }
+
+    return {
+      target,
+      segmentationId,
+      viewportId,
+      sliceAxis,
+      sliceIndex,
+      dimensions: [...dimensions],
+      values,
+    };
+  }
+
+  /** Registers a before/after slice edit with OHIF's global undo/redo history. */
+  pushSliceEditMemo(servicesManager: any, before: SliceEditSnapshot, after: SliceEditSnapshot) {
+    const restoreSnapshot = (snapshot: SliceEditSnapshot) => {
+      const scalarData = this.getScalarData(snapshot.target);
+      if (!scalarData) {
+        return;
+      }
+
+      const [X, Y] = snapshot.dimensions;
+      const { width, height } = this.getSliceDimensions(snapshot.dimensions, snapshot.sliceAxis);
+      let idx2d = 0;
+
+      for (let v = 0; v < height; v++) {
+        for (let u = 0; u < width; u++) {
+          const ijk = this.uvToIjk(u, v, snapshot.sliceAxis, snapshot.sliceIndex);
+          const idx = ijk[0] + ijk[1] * X + ijk[2] * X * Y;
+          scalarData[idx] = snapshot.values[idx2d++];
+        }
+      }
+
+      this.commitScalarData(snapshot.target, scalarData);
+      const viewport =
+        servicesManager.services.cornerstoneViewportService?.getCornerstoneViewport?.(snapshot.viewportId);
+      this.notifySegmentationModified(
+        servicesManager,
+        viewport,
+        snapshot.viewportId,
+        snapshot.segmentationId
+      );
+    };
+
+    DefaultHistoryMemo.push({
+      restoreMemo: (undo?: boolean) => {
+        restoreSnapshot(undo === true ? before : after);
+      },
+    });
+  }
+
   notifySegmentationModified(
     servicesManager: any,
     viewport: any,
@@ -642,6 +676,16 @@ class ReassignTool extends BaseTool {
 
     const sliceIndex = Math.round(sliceAxis === 0 ? meanI : (sliceAxis === 1 ? meanJ : meanK));
     return { sliceAxis, sliceIndex };
+  }
+
+  getSliceDimensions(dimensions: number[], sliceAxis: number) {
+    if (sliceAxis === 0) {
+      return { width: dimensions[1], height: dimensions[2] };
+    }
+    if (sliceAxis === 1) {
+      return { width: dimensions[0], height: dimensions[2] };
+    }
+    return { width: dimensions[0], height: dimensions[1] };
   }
 
   ijkToUv(ijk: number[], sliceAxis: number): [number, number] {

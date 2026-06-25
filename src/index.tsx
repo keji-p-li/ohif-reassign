@@ -169,7 +169,7 @@ export default {
       undoReassignChange: () => {
         const toolInstance = getActiveToolInstance();
         if (toolInstance) {
-          toolInstance.undoChange(servicesManager);
+          toolInstance.undoChange();
         }
       },
     };

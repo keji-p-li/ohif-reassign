@@ -22,6 +22,7 @@ struct Stats {
   float sigma = 1.0f;
 };
 
+// Samples a simple intensity model from trace seeds. The sigma floor keeps single-valued traces usable.
 Stats sampleStats(const float* intensities, const std::vector<GridPoint>& seeds, int width, int height) {
   double sum = 0.0;
   double sumSq = 0.0;
@@ -51,6 +52,7 @@ float gaussianSimilarity(float value, const Stats& stats) {
   return std::exp(-0.5f * z * z);
 }
 
+// Precomputes normalized central-difference gradient so sharp borders can penalize growth.
 std::vector<float> computeGradient(const float* intensities, int width, int height) {
   std::vector<float> gradient(width * height, 0.0f);
   float maxGradient = 0.0f;
@@ -78,17 +80,17 @@ std::vector<float> computeGradient(const float* intensities, int width, int heig
   return gradient;
 }
 
-bool hasIntensityModel(const ReassignVoronoiInput& input) {
+bool hasIntensityModel(const ReassignSliceRegionGrowInput& input) {
   return input.intensities && input.intensityCount == input.width * input.height;
 }
 
 } // namespace
 
-ReassignVoronoiResult runReassignVoronoi2D(
+ReassignSliceRegionGrowResult runReassignSliceRegionGrow2D(
   std::vector<std::uint16_t>& labels,
-  const ReassignVoronoiInput& input)
+  const ReassignSliceRegionGrowInput& input)
 {
-  ReassignVoronoiResult result;
+  ReassignSliceRegionGrowResult result;
   const int width = input.width;
   const int height = input.height;
 

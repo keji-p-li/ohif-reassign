@@ -8,8 +8,8 @@
 #include <vector>
 
 using quiqvu::region_grow::GridPoint;
-using quiqvu::region_grow::ReassignVoronoiInput;
-using quiqvu::region_grow::runReassignVoronoi2D;
+using quiqvu::region_grow::ReassignSliceRegionGrowInput;
+using quiqvu::region_grow::runReassignSliceRegionGrow2D;
 
 namespace {
 
@@ -28,28 +28,28 @@ void testPositiveOnlyAppliesSeedDisk() {
   const int height = 9;
   std::vector<std::uint16_t> labels(width * height, 0);
 
-  ReassignVoronoiInput input;
+  ReassignSliceRegionGrowInput input;
   input.width = width;
   input.height = height;
   input.segmentIndex = 3;
   input.seedRadius = 1;
   input.positiveSeeds = {{4, 4}};
 
-  const auto result = runReassignVoronoi2D(labels, input);
+  const auto result = runReassignSliceRegionGrow2D(labels, input);
 
   require(labels[idx(4, 4, width)] == 3, "positive center was not written");
   require(labels[idx(3, 4, width)] == 3, "positive left neighbor was not written");
   require(labels[idx(4, 3, width)] == 3, "positive upper neighbor was not written");
   require(labels[idx(3, 3, width)] == 0, "seed radius should be circular, not square");
-  require(result.classifiedVoxels == 0, "positive-only case should skip voronoi classification");
+  require(result.classifiedVoxels == 0, "positive-only case should skip full-slice classification");
 }
 
-void testVoronoiSplitsBetweenPositiveAndNegative() {
+void testFallbackSplitsBetweenPositiveAndNegative() {
   const int width = 11;
   const int height = 1;
   std::vector<std::uint16_t> labels(width * height, 0);
 
-  ReassignVoronoiInput input;
+  ReassignSliceRegionGrowInput input;
   input.width = width;
   input.height = height;
   input.segmentIndex = 2;
@@ -57,7 +57,7 @@ void testVoronoiSplitsBetweenPositiveAndNegative() {
   input.positiveSeeds = {{1, 0}};
   input.negativeSeeds = {{9, 0}};
 
-  const auto result = runReassignVoronoi2D(labels, input);
+  const auto result = runReassignSliceRegionGrow2D(labels, input);
 
   require(labels[idx(0, 0, width)] == 2, "left side should be positive");
   require(labels[idx(4, 0, width)] == 2, "left middle should be positive");
@@ -71,7 +71,7 @@ void testOtherSegmentsAreProtected() {
   std::vector<std::uint16_t> labels(width * height, 0);
   labels[idx(3, 0, width)] = 99;
 
-  ReassignVoronoiInput input;
+  ReassignSliceRegionGrowInput input;
   input.width = width;
   input.height = height;
   input.segmentIndex = 4;
@@ -79,7 +79,7 @@ void testOtherSegmentsAreProtected() {
   input.positiveSeeds = {{0, 0}};
   input.negativeSeeds = {{6, 0}};
 
-  runReassignVoronoi2D(labels, input);
+  runReassignSliceRegionGrow2D(labels, input);
 
   require(labels[idx(3, 0, width)] == 99, "existing unrelated segment must be protected");
 }
@@ -96,7 +96,7 @@ void testIntensityModelStopsAtSharpBoundary() {
     }
   }
 
-  ReassignVoronoiInput input;
+  ReassignSliceRegionGrowInput input;
   input.width = width;
   input.height = height;
   input.segmentIndex = 6;
@@ -106,7 +106,7 @@ void testIntensityModelStopsAtSharpBoundary() {
   input.positiveSeeds = {{2, 2}, {3, 2}, {4, 2}};
   input.negativeSeeds = {{18, 2}, {17, 2}, {16, 2}};
 
-  const auto result = runReassignVoronoi2D(labels, input);
+  const auto result = runReassignSliceRegionGrow2D(labels, input);
 
   require(result.classifiedVoxels > 0, "intensity growth should accept include-like voxels");
   require(labels[idx(2, 2, width)] == 6, "include seed should remain segment");
@@ -119,7 +119,7 @@ void runPerformanceSmoke() {
   const int height = 512;
   std::vector<std::uint16_t> labels(width * height, 0);
 
-  ReassignVoronoiInput input;
+  ReassignSliceRegionGrowInput input;
   input.width = width;
   input.height = height;
   input.segmentIndex = 5;
@@ -128,7 +128,7 @@ void runPerformanceSmoke() {
   input.negativeSeeds = {{384, 384}, {386, 384}, {384, 386}};
 
   const auto start = std::chrono::steady_clock::now();
-  const auto result = runReassignVoronoi2D(labels, input);
+  const auto result = runReassignSliceRegionGrow2D(labels, input);
   const auto end = std::chrono::steady_clock::now();
   const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
@@ -148,7 +148,7 @@ void runIntensityPerformanceSmoke() {
     }
   }
 
-  ReassignVoronoiInput input;
+  ReassignSliceRegionGrowInput input;
   input.width = width;
   input.height = height;
   input.segmentIndex = 7;
@@ -159,7 +159,7 @@ void runIntensityPerformanceSmoke() {
   input.negativeSeeds = {{384, 384}, {386, 384}, {384, 386}};
 
   const auto start = std::chrono::steady_clock::now();
-  const auto result = runReassignVoronoi2D(labels, input);
+  const auto result = runReassignSliceRegionGrow2D(labels, input);
   const auto end = std::chrono::steady_clock::now();
   const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
@@ -174,7 +174,7 @@ void runIntensityPerformanceSmoke() {
 int main() {
   try {
     testPositiveOnlyAppliesSeedDisk();
-    testVoronoiSplitsBetweenPositiveAndNegative();
+    testFallbackSplitsBetweenPositiveAndNegative();
     testOtherSegmentsAreProtected();
     testIntensityModelStopsAtSharpBoundary();
     runPerformanceSmoke();

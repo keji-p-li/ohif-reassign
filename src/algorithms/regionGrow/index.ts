@@ -2,7 +2,7 @@ import createRegionGrowModule from './generated/regionGrowWasm.js';
 
 export type GridPoint = [number, number];
 
-export type ReassignVoronoiInput = {
+export type ReassignSliceRegionGrowInput = {
   scalarData: ArrayLike<number> & { [index: number]: number };
   intensityData?: ArrayLike<number> & { [index: number]: number };
   intensityDimensions?: number[];
@@ -15,7 +15,7 @@ export type ReassignVoronoiInput = {
   seedRadius?: number;
 };
 
-export type ReassignVoronoiResult = {
+export type ReassignSliceRegionGrowResult = {
   changedVoxels: number;
   classifiedVoxels: number;
   width: number;
@@ -29,7 +29,11 @@ function getRegionGrowModule() {
   return modulePromise;
 }
 
-export async function runReassignVoronoi2D({
+/**
+ * Runs the native 2D reassign growth kernel on one extracted labelmap slice.
+ * The adapter owns all memory copies between OHIF's 3D scalar arrays and WASM's flat 2D buffers.
+ */
+export async function runReassignSliceRegionGrow2D({
   scalarData,
   intensityData,
   intensityDimensions,
@@ -40,7 +44,7 @@ export async function runReassignVoronoi2D({
   negSeedsGrid,
   segmentIndex,
   seedRadius = 2,
-}: ReassignVoronoiInput): Promise<ReassignVoronoiResult> {
+}: ReassignSliceRegionGrowInput): Promise<ReassignSliceRegionGrowResult> {
   const module = await getRegionGrowModule();
   const [xDim, yDim] = dimensions;
   const [intensityXDim, intensityYDim] = intensityDimensions ?? dimensions;
@@ -95,7 +99,7 @@ export async function runReassignVoronoi2D({
       module.HEAP32.set(flattenSeeds(negSeedsGrid), negPtr / Int32Array.BYTES_PER_ELEMENT);
     }
 
-    const ok = module._rg_run_reassign_voronoi_2d(
+    const ok = module._rg_run_reassign_slice_region_grow_2d(
       labelPtr,
       intensityPtr,
       width,

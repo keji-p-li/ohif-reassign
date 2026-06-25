@@ -10,7 +10,8 @@ struct GridPoint {
   int v = 0;
 };
 
-struct ReassignVoronoiInput {
+/// Parameters for a single-slice reassign growth pass.
+struct ReassignSliceRegionGrowInput {
   int width = 0;
   int height = 0;
   std::uint16_t segmentIndex = 1;
@@ -21,13 +22,15 @@ struct ReassignVoronoiInput {
   std::vector<GridPoint> negativeSeeds;
 };
 
-struct ReassignVoronoiResult {
+/// Minimal execution summary returned to UI code for testing and diagnostics.
+struct ReassignSliceRegionGrowResult {
   int changedVoxels = 0;
   int classifiedVoxels = 0;
 };
 
-ReassignVoronoiResult runReassignVoronoi2D(
+/// Grows or removes the active segment on one 2D slice from positive and negative seed traces.
+ReassignSliceRegionGrowResult runReassignSliceRegionGrow2D(
   std::vector<std::uint16_t>& labels,
-  const ReassignVoronoiInput& input);
+  const ReassignSliceRegionGrowInput& input);
 
 } // namespace quiqvu::region_grow

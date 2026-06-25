@@ -4,12 +4,12 @@
 #include <vector>
 
 using quiqvu::region_grow::GridPoint;
-using quiqvu::region_grow::ReassignVoronoiInput;
-using quiqvu::region_grow::runReassignVoronoi2D;
+using quiqvu::region_grow::ReassignSliceRegionGrowInput;
+using quiqvu::region_grow::runReassignSliceRegionGrow2D;
 
 extern "C" {
 
-int rg_run_reassign_voronoi_2d(
+int rg_run_reassign_slice_region_grow_2d(
   std::uint16_t* labels,
   const float* intensities,
   int width,
@@ -29,7 +29,7 @@ int rg_run_reassign_voronoi_2d(
 
   std::vector<std::uint16_t> labelVector(labels, labels + width * height);
 
-  ReassignVoronoiInput input;
+  ReassignSliceRegionGrowInput input;
   input.width = width;
   input.height = height;
   input.segmentIndex = segmentIndex;
@@ -47,7 +47,7 @@ int rg_run_reassign_voronoi_2d(
     input.negativeSeeds.push_back(GridPoint{negativeSeeds[i * 2], negativeSeeds[i * 2 + 1]});
   }
 
-  const auto result = runReassignVoronoi2D(labelVector, input);
+  const auto result = runReassignSliceRegionGrow2D(labelVector, input);
 
   for (int i = 0; i < width * height; ++i) {
     labels[i] = labelVector[i];
